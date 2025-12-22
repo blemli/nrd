@@ -5,7 +5,7 @@ Run `npm run dev` in background for all your Laravel Herd sites.
 ## Installation
 
 ```bash
-pip install nrd
+pipx install nrd
 ```
 
 **Important: After installing, set up the autostart service:**
@@ -16,11 +16,13 @@ nrd-service-install
 ```
 
 **Linux:**
+
 ```bash
 sudo nrd-service-install
 ```
 
 **Windows (Run PowerShell as Administrator):**
+
 ```powershell
 nrd-service-install
 ```

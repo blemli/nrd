@@ -9,29 +9,33 @@ import os
 import platform
 import subprocess
 import shutil
+import time
 from pathlib import Path
 
 
 def get_nrd_command():
     """Get the path to the nrd command.
 
-    Uses shutil.which to find the globally installed nrd command,
-    which ensures the service works even after the venv is deleted.
+    Prefers global installation paths (pipx, /usr/local/bin) over
+    whatever is first in PATH, to ensure the service works reliably.
     """
-    nrd_path = shutil.which('nrd')
-    if nrd_path:
-        return nrd_path
-    # Fallback: if nrd is not in PATH, try common locations
     home = os.path.expanduser('~')
-    common_paths = [
-        os.path.join(home, '.local', 'bin', 'nrd'),
+
+    # Prefer global/stable installation paths first
+    preferred_paths = [
+        os.path.join(home, '.local', 'bin', 'nrd'),  # pipx location
         '/usr/local/bin/nrd',
         '/opt/homebrew/bin/nrd',
     ]
-    for path in common_paths:
+    for path in preferred_paths:
         if os.path.exists(path):
             return path
-    # Last resort: return None, caller should handle
+
+    # Fall back to whatever is in PATH
+    nrd_path = shutil.which('nrd')
+    if nrd_path:
+        return nrd_path
+
     return None
 
 
@@ -178,13 +182,44 @@ def install_macos():
     
     print(f"Plist file created at: {plist_file}")
     
-    # Unload if already loaded
-    subprocess.run(['launchctl', 'unload', plist_file], 
-                   stderr=subprocess.DEVNULL, check=False)
-    
-    # Load the service
-    subprocess.run(['launchctl', 'load', plist_file], check=True)
-    
+    # Get user ID for launchctl bootstrap
+    uid = os.getuid()
+    service_target = f"gui/{uid}"
+    service_name = "li.problem.nrd"
+
+    # Unload if already loaded (using modern bootout command)
+    subprocess.run(['launchctl', 'bootout', f"{service_target}/{service_name}"],
+                   stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=False)
+
+    # Load the service using modern bootstrap command
+    result = subprocess.run(
+        ['launchctl', 'bootstrap', service_target, plist_file],
+        capture_output=True, text=True
+    )
+
+    if result.returncode != 0:
+        print(f"Error loading service: {result.stderr.strip() or result.stdout.strip()}")
+        print("\nTrying legacy load command...")
+        result = subprocess.run(
+            ['launchctl', 'load', '-w', plist_file],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f"Error: {result.stderr.strip() or result.stdout.strip()}")
+            sys.exit(1)
+
+    # Verify the service is actually running
+    time.sleep(0.5)
+    check_result = subprocess.run(
+        ['launchctl', 'list', service_name],
+        capture_output=True, text=True
+    )
+
+    if check_result.returncode != 0:
+        print("Error: Service failed to start.")
+        print("Check logs at /tmp/nrd.error.log for details.")
+        sys.exit(1)
+
     print("✓ NRD service installed and started successfully!")
     print("\nLogs available at:")
     print("  - /tmp/nrd.log")
@@ -386,27 +421,32 @@ def install_windows():
 def uninstall_macos():
     """Uninstall NRD LaunchAgent from macOS."""
     print("Uninstalling NRD service for macOS...")
-    
+
     home = os.path.expanduser('~')
     if is_admin() and os.environ.get('SUDO_USER'):
         import pwd
         home = pwd.getpwnam(os.environ['SUDO_USER']).pw_dir
-    
+
     plist_file = os.path.join(home, 'Library', 'LaunchAgents', 'li.problem.nrd.plist')
-    
+
     if not os.path.exists(plist_file):
         print(f"NRD service is not installed at: {plist_file}")
         sys.exit(1)
-    
-    # Unload the service
+
+    # Get user ID for launchctl bootout
+    uid = os.getuid()
+    service_target = f"gui/{uid}"
+    service_name = "li.problem.nrd"
+
+    # Unload the service using modern bootout command
     print("Stopping service...")
-    subprocess.run(['launchctl', 'unload', plist_file], 
-                   stderr=subprocess.DEVNULL, check=False)
-    
+    subprocess.run(['launchctl', 'bootout', f"{service_target}/{service_name}"],
+                   stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL, check=False)
+
     # Remove the plist file
     print("Removing service file...")
     os.remove(plist_file)
-    
+
     print("✓ NRD service uninstalled successfully!")
 
 
