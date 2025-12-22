@@ -12,9 +12,27 @@ import shutil
 from pathlib import Path
 
 
-def get_python_path():
-    """Get the current Python interpreter path."""
-    return sys.executable
+def get_nrd_command():
+    """Get the path to the nrd command.
+
+    Uses shutil.which to find the globally installed nrd command,
+    which ensures the service works even after the venv is deleted.
+    """
+    nrd_path = shutil.which('nrd')
+    if nrd_path:
+        return nrd_path
+    # Fallback: if nrd is not in PATH, try common locations
+    home = os.path.expanduser('~')
+    common_paths = [
+        os.path.join(home, '.local', 'bin', 'nrd'),
+        '/usr/local/bin/nrd',
+        '/opt/homebrew/bin/nrd',
+    ]
+    for path in common_paths:
+        if os.path.exists(path):
+            return path
+    # Last resort: return None, caller should handle
+    return None
 
 
 def is_admin():
@@ -74,60 +92,78 @@ def get_command_paths():
 def install_macos():
     """Install NRD as a macOS LaunchAgent."""
     print("Installing NRD service for macOS...")
-    
+
     user = get_actual_user()
     home = os.path.expanduser('~')
     if is_admin() and os.environ.get('SUDO_USER'):
         # Running under sudo, get the actual user's home
         import pwd
         home = pwd.getpwnam(os.environ['SUDO_USER']).pw_dir
-    
+
     launch_agents_dir = os.path.join(home, 'Library', 'LaunchAgents')
     os.makedirs(launch_agents_dir, exist_ok=True)
-    
-    python_path = get_python_path()
+
+    nrd_command = get_nrd_command()
+    if not nrd_command:
+        print("Error: Could not find 'nrd' command. Make sure nrd is installed globally:")
+        print("  pip install nrd")
+        print("  # or")
+        print("  pipx install nrd")
+        sys.exit(1)
+
+    # Verify nrd is not from a venv (which would break after venv deletion)
+    if '.venv' in nrd_command or 'virtualenv' in nrd_command.lower():
+        print(f"Warning: Found nrd at {nrd_command} which appears to be in a virtual environment.")
+        print("The service may break if the virtual environment is deleted.")
+        print("Consider installing nrd globally:")
+        print("  pip install --user nrd")
+        print("  # or")
+        print("  pipx install nrd")
+        response = input("Continue anyway? [y/N]: ")
+        if response.lower() != 'y':
+            sys.exit(1)
+
     plist_file = os.path.join(launch_agents_dir, 'li.problem.nrd.plist')
-    
+
     # Detect additional paths for herd, npm, node
     additional_paths = get_command_paths()
-    
+
     # Build complete PATH
-    base_paths = ['/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin', 
+    base_paths = ['/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin',
                   '/opt/homebrew/bin', f'{home}/.local/bin']
     all_paths = base_paths + additional_paths
     path_string = ':'.join(all_paths)
-    
+
+    print(f"Using nrd command: {nrd_command}")
     print(f"Detected command paths: {', '.join(additional_paths) if additional_paths else 'none'}")
-    
+
     plist_content = f'''<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>li.problem.nrd</string>
-    
+
     <key>ProgramArguments</key>
     <array>
-        <string>{python_path}</string>
-        <string>-m</string>
-        <string>nrd.nrd</string>
+        <string>{nrd_command}</string>
     </array>
-    
+
     <key>RunAtLoad</key>
     <true/>
-    
+
     <key>KeepAlive</key>
     <true/>
-    
+
     <key>StandardOutPath</key>
     <string>/tmp/nrd.log</string>
-    
+
     <key>StandardErrorPath</key>
     <string>/tmp/nrd.error.log</string>
-    
+
     <key>WorkingDirectory</key>
     <string>{home}</string>
-    
+
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -161,19 +197,40 @@ def install_linux():
     if not is_admin():
         print("Error: Please run with sudo")
         sys.exit(1)
-    
+
     print("Installing NRD service for Linux...")
-    
+
     actual_user = get_actual_user()
     if not actual_user or actual_user == 'root':
         print("Error: Cannot determine actual user. Please run with sudo as a regular user.")
         sys.exit(1)
-    
+
     print(f"Installing for user: {actual_user}")
-    
-    python_path = get_python_path()
+
+    nrd_command = get_nrd_command()
+    if not nrd_command:
+        print("Error: Could not find 'nrd' command. Make sure nrd is installed globally:")
+        print("  pip install nrd")
+        print("  # or")
+        print("  pipx install nrd")
+        sys.exit(1)
+
+    # Verify nrd is not from a venv
+    if '.venv' in nrd_command or 'virtualenv' in nrd_command.lower():
+        print(f"Warning: Found nrd at {nrd_command} which appears to be in a virtual environment.")
+        print("The service may break if the virtual environment is deleted.")
+        print("Consider installing nrd globally:")
+        print("  pip install --user nrd")
+        print("  # or")
+        print("  pipx install nrd")
+        response = input("Continue anyway? [y/N]: ")
+        if response.lower() != 'y':
+            sys.exit(1)
+
+    print(f"Using nrd command: {nrd_command}")
+
     service_file = '/etc/systemd/system/nrd@.service'
-    
+
     service_content = f'''[Unit]
 Description=NRD - Vite Dev Server Background Service
 After=network.target
@@ -182,7 +239,7 @@ After=network.target
 Type=simple
 User=%i
 WorkingDirectory=/home/%i
-ExecStart={python_path} -m nrd.nrd
+ExecStart={nrd_command}
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -220,18 +277,37 @@ def install_windows():
         print("Error: This script must be run as Administrator")
         print("Right-click PowerShell/CMD and select 'Run as Administrator'")
         sys.exit(1)
-    
+
     print("Installing NRD service for Windows...")
-    
+
     current_user = get_actual_user()
     user_profile = os.environ.get('USERPROFILE')
-    python_path = get_python_path()
-    
+
+    nrd_command = get_nrd_command()
+    if not nrd_command:
+        print("Error: Could not find 'nrd' command. Make sure nrd is installed globally:")
+        print("  pip install nrd")
+        print("  # or")
+        print("  pipx install nrd")
+        sys.exit(1)
+
+    # Verify nrd is not from a venv
+    if '.venv' in nrd_command or 'virtualenv' in nrd_command.lower() or 'venv' in nrd_command.lower():
+        print(f"Warning: Found nrd at {nrd_command} which appears to be in a virtual environment.")
+        print("The service may break if the virtual environment is deleted.")
+        print("Consider installing nrd globally:")
+        print("  pip install --user nrd")
+        print("  # or")
+        print("  pipx install nrd")
+        response = input("Continue anyway? [y/N]: ")
+        if response.lower() != 'y':
+            sys.exit(1)
+
     print(f"Installing for user: {current_user}")
-    print(f"Using Python: {python_path}")
-    
+    print(f"Using nrd command: {nrd_command}")
+
     task_name = "NRD-Service"
-    
+
     # Use schtasks to create the task
     xml_content = f'''<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -276,8 +352,7 @@ def install_windows():
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>{python_path}</Command>
-      <Arguments>-m nrd.nrd</Arguments>
+      <Command>{nrd_command}</Command>
       <WorkingDirectory>{user_profile}</WorkingDirectory>
     </Exec>
   </Actions>
